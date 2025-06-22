@@ -10,14 +10,14 @@ from invokeai.invocation_api import (
     OutputField,
     invocation_output,
     BaseInvocationOutput,
+    StringOutput,
+    StringCollectionOutput,
 )
 from invokeai.app.invocations.fields import(
     FluxConditioningField,
 )
 from invokeai.app.invocations.primitives import (
     FluxConditioningOutput,
-    StringOutput,
-    StringCollectionOutput,
 )
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import (
     FLUXConditioningInfo,
@@ -120,7 +120,7 @@ class DecodeMaskVectorPairs(BaseInvocation):
     title="Flux Conditioning Genetic Algorithm",
     tags=["conditioning", "flux", "genetic", "algorithm", "evolution"],
     category="conditioning",
-    version="1.0.3", # Incrementing version due to new input and modified logic
+    version="1.0.4", # Incrementing version due to new input and modified logic
 )
 class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
     """
@@ -133,21 +133,26 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         description="List of FLUX Conditioning candidates for the genetic algorithm.",
         ui_order=0,
     )
-    mask_vector_pairs_json: Optional[list[str]] = InputField(
+    mask_vector_pairs_json: str | list[str] | None = InputField(
         default=None,
         description="Optional: List of JSON strings, each a [T5_mask, CLIP_mask] pair. Used for masked crossover.",
         ui_order=1, # Placed next to candidates as requested
+    )
+    initialize_random_masks_if_none: bool = InputField(
+        default=False,
+        description="If no masks are provided, initialize random binary masks for crossover.",
+        ui_order=2,
     )
     population_size: int = InputField(
         default=10,
         gt=0,
         description="Desired size of the new conditioning population.",
-        ui_order=2,
+        ui_order=3, # Adjusted UI order
     )
     crossover_method: Literal["Splice", "Differential Evolution"] = InputField(
         default="Splice",
         description="Method to use for combining parent embeddings.",
-        ui_order=3,
+        ui_order=4, # Adjusted UI order
         ui_choice_labels={
             "Splice": "Splice (Single-point crossover)",
             "Differential Evolution": "Differential Evolution (3-parent crossover)"
@@ -157,31 +162,31 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         default=0.7,
         ge=0.0,
         description="Scale factor for differential evolution crossover. (Only used with Differential Evolution method)",
-        ui_order=4,
+        ui_order=5, # Adjusted UI order
     )
     mutation_rate: float = InputField(
         default=0.1,
         ge=0.0,
         le=1.0,
         description="Rate of mutation per tensor element (0.0 to 1.0).",
-        ui_order=5,
+        ui_order=6, # Adjusted UI order
     )
     mutation_strength: float = InputField(
         default=0.05,
         ge=0.0,
         description="Strength of mutation (Gaussian noise multiplier).",
-        ui_order=6,
+        ui_order=7, # Adjusted UI order
     )
     seed: Optional[int] = InputField(
         default=None,
         description="Random seed for deterministic behavior.",
-        ui_order=7,
+        ui_order=8, # Adjusted UI order
     )
     selected_member_index: int = InputField(
         default=0,
         ge=0,
         description="Index of the new population member to output as a single conditioning.",
-        ui_order=8,
+        ui_order=9, # Adjusted UI order
     )
 
     def _load_conditioning(
@@ -242,7 +247,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             error("Masks must have the same shape for binary mask crossover. Returning clone of first mask.")
             return mask1.clone()
 
-        child_mask = torch.empty_like(mask1)
+        child_mask = torch.empty_like(mask1, dtype=torch.bool) # Ensure boolean type
         for i in range(mask1.numel()):
             if py_rng.random() < 0.5: # 50% chance to pick from parent1
                 child_mask.flatten()[i] = mask1.flatten()[i]
@@ -298,7 +303,11 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
 
         # --- Mask Vector Handling ---
         initial_mask_vectors: Optional[List[List[torch.Tensor]]] = None
+        
+        # Attempt to load masks if provided
         if self.mask_vector_pairs_json:
+            if not type(self.mask_vector_pairs_json) == list:
+                self.mask_vector_pairs_json = [self.mask_vector_pairs_json for i in range(self.population_size)]
             initial_mask_vectors = []
             for mask_json_str in self.mask_vector_pairs_json:
                 try:
@@ -311,25 +320,41 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                         
                         # Convert lists to torch tensors. Assume they are binary (0s and 1s)
                         # Ensure shapes match the actual embedding shapes for proper application
+                        # If reshape fails, it means the mask dimensions are wrong for the embedding
                         t5_mask = torch.tensor(t5_mask_list, dtype=torch.bool).reshape(first_t5_shape)
                         clip_mask = torch.tensor(clip_mask_list, dtype=torch.bool).reshape(first_clip_shape)
                         initial_mask_vectors.append([t5_mask, clip_mask])
                     else:
-                        warning(f"Invalid mask vector pair JSON structure: {mask_json_str}. Skipping mask.")
+                        warning(f"Invalid mask vector pair JSON structure: {mask_json_str}. Will not use provided masks.")
                         initial_mask_vectors = None # Invalidate mask usage
                         break # Stop trying to load masks
                 except json.JSONDecodeError as e:
-                    warning(f"Failed to decode mask vector JSON: {mask_json_str}. Error: {e}. Skipping mask.")
+                    warning(f"Failed to decode mask vector JSON: {mask_json_str}. Error: {e}. Will not use provided masks.")
                     initial_mask_vectors = None # Invalidate mask usage
                     break # Stop trying to load masks
                 except Exception as e:
-                    warning(f"Error processing mask vector JSON: {mask_json_str}. Error: {e}. Skipping mask.")
+                    warning(f"Error processing mask vector JSON: {mask_json_str}. Error: {e}. Will not use provided masks.")
                     initial_mask_vectors = None # Invalidate mask usage
                     break # Stop trying to load masks
             
             if initial_mask_vectors and len(initial_mask_vectors) != len(self.candidates):
-                warning(f"Number of mask vector pairs ({len(initial_mask_vectors)}) does not match number of candidates ({len(self.candidates)}). Masked crossover will not be used.")
+                warning(f"Number of mask vector pairs ({len(initial_mask_vectors)}) does not match number of candidates ({len(self.candidates)}). Will not use provided masks.")
                 initial_mask_vectors = None # Invalidate mask usage
+
+        # If no masks were provided or loading failed, and initialization is requested
+        if initial_mask_vectors is None and self.initialize_random_masks_if_none:
+            info("No masks provided, but 'initialize_random_masks_if_none' is True. Generating random masks.")
+            initial_mask_vectors = []
+            for _ in range(len(self.candidates)): # Generate one pair of masks per candidate
+                # Random binary mask for T5 (same shape as first T5 candidate)
+                random_t5_mask = (torch.rand(first_t5_shape, generator=torch_rng) < 0.5).to(torch.bool)
+                # Random binary mask for CLIP (same shape as first CLIP candidate)
+                random_clip_mask = (torch.rand(first_clip_shape, generator=torch_rng) < 0.5).to(torch.bool)
+                initial_mask_vectors.append([random_t5_mask, random_clip_mask])
+            info(f"Generated {len(initial_mask_vectors)} random mask pairs.")
+        elif initial_mask_vectors is None:
+             info("No masks provided and 'initialize_random_masks_if_none' is False. Crossover will be unmasked.")
+
 
         def splice_crossover(t1: torch.Tensor, t2: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
             """
@@ -450,24 +475,30 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             # p3_idx is only used for Differential Evolution
             p3_idx = p_indices[2] if self.crossover_method == "Differential Evolution" else None
 
-            # --- Handle Mask Crossover if masks are provided ---
-            if initial_mask_vectors and len(initial_mask_vectors) > 1: # Need at least two parent masks to crossover
-                # Get parent masks
-                parent1_t5_mask, parent1_clip_mask = initial_mask_vectors[p1_idx]
-                parent2_t5_mask, parent2_clip_mask = initial_mask_vectors[p2_idx]
-                
-                # Perform binary crossover on masks
-                current_t5_mask = self._binary_mask_crossover(parent1_t5_mask, parent2_t5_mask, py_rng)
-                current_clip_mask = self._binary_mask_crossover(parent1_clip_mask, parent2_clip_mask, py_rng)
+            # --- Determine which masks to use for this child's crossover ---
+            # If initial_mask_vectors exist, use them
+            if initial_mask_vectors:
+                # Perform binary crossover on masks if enough masks are available
+                if len(initial_mask_vectors) > 1:
+                    # Get parent masks
+                    parent1_t5_mask, parent1_clip_mask = initial_mask_vectors[p1_idx]
+                    parent2_t5_mask, parent2_clip_mask = initial_mask_vectors[p2_idx]
+                    
+                    # Perform binary crossover on masks
+                    current_t5_mask = self._binary_mask_crossover(parent1_t5_mask, parent2_t5_mask, py_rng)
+                    current_clip_mask = self._binary_mask_crossover(parent1_clip_mask, parent2_clip_mask, py_rng)
+                    info(f"Masks for child {i+1} generated via binary crossover from provided/random masks.")
+                elif len(initial_mask_vectors) == 1:
+                    # If only one mask is available (e.g., from `initialize_random_masks_if_none` and population_size=1), use it directly
+                    current_t5_mask, current_clip_mask = initial_mask_vectors[0]
+                    info(f"Using the single available mask for child {i+1}.")
+                else:
+                    # Fallback for unexpected empty initial_mask_vectors even after attempts
+                    info(f"No valid masks to apply for child {i+1}. Crossover will be unmasked.")
 
-                info(f"Masks for child {i+1} generated via binary crossover.")
-            elif initial_mask_vectors and len(initial_mask_vectors) == 1:
-                # If only one mask is provided, use it directly (no crossover, just reuse)
-                current_t5_mask, current_clip_mask = initial_mask_vectors[0]
-                info(f"Using the single provided mask for child {i+1}.")
             else:
-                # No masks provided, or not enough for crossover. Crossover will be unmasked.
-                info(f"No valid masks provided or insufficient masks for crossover. Crossover will be unmasked for child {i+1}.")
+                # No masks provided or generated, crossover will be unmasked
+                info(f"No masks available for child {i+1}. Crossover will be unmasked.")
 
 
             if self.crossover_method == "Splice":
@@ -527,7 +558,8 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                 output_clip_mask_list = current_clip_mask.flatten().tolist()
                 mask_pair_json_str = json.dumps([output_t5_mask_list, output_clip_mask_list])
             else:
-                mask_pair_json_str = json.dumps([[], []]) # Output empty masks if none were used/generated
+                # If no masks were used for this child, output empty lists
+                mask_pair_json_str = json.dumps([[], []]) 
             
             generated_mask_pairs.append(mask_pair_json_str)
 
