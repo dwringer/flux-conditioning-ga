@@ -120,7 +120,7 @@ class DecodeMaskVectorPairs(BaseInvocation):
     title="Flux Conditioning Genetic Algorithm",
     tags=["conditioning", "flux", "genetic", "algorithm", "evolution"],
     category="conditioning",
-    version="1.0.5", # Incrementing version due to optimized mask crossover
+    version="1.0.6", # Incrementing version due to N-point crossover
 )
 class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
     """
@@ -149,44 +149,51 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         description="Desired size of the new conditioning population.",
         ui_order=3,
     )
-    crossover_method: Literal["Splice", "Differential Evolution"] = InputField(
+    crossover_method: Literal["Splice", "N-Point Splice", "Differential Evolution"] = InputField(
         default="Splice",
         description="Method to use for combining parent embeddings.",
         ui_order=4,
         ui_choice_labels={
             "Splice": "Splice (Single-point crossover)",
+            "N-Point Splice": "N-Point Splice (Multiple random points)",
             "Differential Evolution": "Differential Evolution (3-parent crossover)"
         }
+    )
+    num_crossover_points: int = InputField(
+        default=3,
+        ge=2,
+        description="Number of crossover points for N-Point Splice. (Only used with N-Point Splice method)",
+        ui_order=5,
     )
     differential_evolution_scale: float = InputField(
         default=0.7,
         ge=0.0,
         description="Scale factor for differential evolution crossover. (Only used with Differential Evolution method)",
-        ui_order=5,
+        ui_order=6,
     )
     mutation_rate: float = InputField(
         default=0.1,
         ge=0.0,
         le=1.0,
         description="Rate of mutation per tensor element (0.0 to 1.0).",
-        ui_order=6,
+        ui_order=7,
     )
     mutation_strength: float = InputField(
         default=0.05,
         ge=0.0,
         description="Strength of mutation (Gaussian noise multiplier).",
-        ui_order=7,
+        ui_order=8,
     )
     seed: Optional[int] = InputField(
         default=None,
         description="Random seed for deterministic behavior.",
-        ui_order=8,
+        ui_order=9,
     )
     selected_member_index: int = InputField(
         default=0,
         ge=0,
         description="Index of the new population member to output as a single conditioning.",
-        ui_order=9,
+        ui_order=10,
     )
 
     def _load_conditioning(
@@ -255,6 +262,95 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         split = py_rng.randint(1, flat1.numel() - 1)
         child_flat = torch.cat((flat1[:split], flat2[split:]), dim=0)
         return child_flat.reshape(mask1.shape)
+
+    def _n_point_splice_crossover(self, t1: torch.Tensor, t2: torch.Tensor, num_points: int, py_rng: random.Random, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Performs N-point splice crossover between two tensors, optionally applying a mask.
+        If a mask is provided, elements where mask is False (0) are copied from t1,
+        and elements where mask is True (1) are spliced from t2 at N random points.
+        """
+        if t1.shape != t2.shape:
+            error("Tensors must have the same shape for N-point splice crossover. Returning clone of first tensor.")
+            return t1.clone()
+
+        if mask is not None and mask.shape != t1.shape:
+            error("Mask shape must match tensor shape for masked N-point splice crossover. Performing unmasked N-point splice.")
+            mask = None
+
+        flat1 = t1.flatten()
+        flat2 = t2.flatten()
+        child_flat = torch.empty_like(flat1)
+
+        if flat1.numel() < 2:
+            return flat1.clone().reshape(t1.shape)
+
+        if mask is None:
+            # Standard N-point splice crossover
+            if num_points >= flat1.numel():
+                warning(f"Number of crossover points ({num_points}) is greater than or equal to tensor size ({flat1.numel()}). Performing direct copy from t2.")
+                return t2.clone().reshape(t1.shape)
+            
+            crossover_points = sorted(py_rng.sample(range(1, flat1.numel()), num_points))
+            
+            current_segment_start = 0
+            use_t1 = True # Start with t1
+            for point in crossover_points:
+                if use_t1:
+                    child_flat[current_segment_start:point] = flat1[current_segment_start:point]
+                else:
+                    child_flat[current_segment_start:point] = flat2[current_segment_start:point]
+                use_t1 = not use_t1
+                current_segment_start = point
+            
+            # Add the last segment
+            if use_t1:
+                child_flat[current_segment_start:] = flat1[current_segment_start:]
+            else:
+                child_flat[current_segment_start:] = flat2[current_segment_start:]
+        else:
+            # Masked N-point splice crossover
+            flat_mask = mask.flatten()
+            
+            # Elements where mask is False (0) are taken from t1
+            child_flat[~flat_mask] = flat1[~flat_mask]
+
+            # For elements where mask is True (1), perform N-point splice
+            masked_indices = torch.where(flat_mask)[0]
+            if masked_indices.numel() > 0:
+                masked_flat1 = flat1[masked_indices]
+                masked_flat2 = flat2[masked_indices]
+
+                if masked_flat1.numel() < 2:
+                    child_flat[masked_indices] = masked_flat1
+                else:
+                    # Adjust num_points for the masked segment
+                    actual_num_points = min(num_points, masked_flat1.numel() - 1)
+                    if actual_num_points <= 0: # Handle case where masked segment is too small for crossover
+                        child_flat[masked_indices] = masked_flat1
+                    else:
+                        crossover_points_masked_idx = sorted(py_rng.sample(range(1, masked_flat1.numel()), actual_num_points))
+                        spliced_masked_part = torch.empty_like(masked_flat1)
+
+                        current_segment_start = 0
+                        use_t1 = True
+                        for point_idx in crossover_points_masked_idx:
+                            if use_t1:
+                                spliced_masked_part[current_segment_start:point_idx] = masked_flat1[current_segment_start:point_idx]
+                            else:
+                                spliced_masked_part[current_segment_start:point_idx] = masked_flat2[current_segment_start:point_idx]
+                            use_t1 = not use_t1
+                            current_segment_start = point_idx
+                        
+                        if use_t1:
+                            spliced_masked_part[current_segment_start:] = masked_flat1[current_segment_start:]
+                        else:
+                            spliced_masked_part[current_segment_start:] = masked_flat2[current_segment_start:]
+                        
+                        child_flat[masked_indices] = spliced_masked_part
+            else:
+                child_flat = flat1.clone() # No masked indices, just copy t1
+                
+        return child_flat.reshape(t1.shape)
 
 
     def invoke(
@@ -348,7 +444,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                 initial_mask_vectors.append([random_t5_mask, random_clip_mask])
             info(f"Generated {len(initial_mask_vectors)} random mask pairs.")
         elif initial_mask_vectors is None:
-             info("No masks provided and 'initialize_random_masks_if_none' is False. Crossover will be unmasked.")
+            info("No masks provided and 'initialize_random_masks_if_none' is False. Crossover will be unmasked.")
 
 
         def splice_crossover(t1: torch.Tensor, t2: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -390,14 +486,14 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                     masked_flat2 = flat2[masked_indices]
 
                     if masked_flat1.numel() < 2:
-                         child_flat[masked_indices] = masked_flat1
+                        child_flat[masked_indices] = masked_flat1
                     else:
                         split_masked = py_rng.randint(1, masked_flat1.numel() - 1)
                         spliced_masked_part = torch.cat((masked_flat1[:split_masked], masked_flat2[split_masked:]), dim=0)
                         child_flat[masked_indices] = spliced_masked_part
                 else:
                     child_flat = flat1.clone()
-            
+                
             return child_flat.reshape(t1.shape)
 
         def differential_evolution_crossover(
@@ -405,7 +501,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         ) -> torch.Tensor:
             """
             Performs differential evolution crossover: child = t1 + scale_factor * (t2 - t3).
-            Optionally applies a mask: only elements where mask is True (1) are affected by DE.
+            Additionally, applies a mask: only elements where mask is True (1) are affected by DE.
             Requires t1, t2, t3 to have the same shape.
             """
             if not (t1.shape == t2.shape == t3.shape):
@@ -458,10 +554,11 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             current_clip_mask: Optional[torch.Tensor] = None
 
             # Select parents
-            p_indices = py_rng.sample(range(len(self.candidates)), 3 if self.crossover_method == "Differential Evolution" else 2)
+            num_parents = 3 if self.crossover_method == "Differential Evolution" else 2
+            p_indices = py_rng.sample(range(len(self.candidates)), num_parents)
             p1_idx = p_indices[0]
             p2_idx = p_indices[1]
-            p3_idx = p_indices[2] if self.crossover_method == "Differential Evolution" else None
+            p3_idx = p_indices[2] if num_parents == 3 else None
 
             # --- Determine which masks to use for this child's crossover ---
             if initial_mask_vectors:
@@ -469,7 +566,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                     parent1_t5_mask, parent1_clip_mask = initial_mask_vectors[p1_idx]
                     parent2_t5_mask, parent2_clip_mask = initial_mask_vectors[p2_idx]
                     
-                    # Use splice crossover for masks
+                    # Use splice crossover for masks (even for N-point embedding crossover, mask crossover remains single point for simplicity)
                     current_t5_mask = self._splice_mask_crossover(parent1_t5_mask, parent2_t5_mask, py_rng)
                     current_clip_mask = self._splice_mask_crossover(parent1_clip_mask, parent2_clip_mask, py_rng)
                     info(f"Masks for child {i+1} generated via splice crossover from provided/random masks.")
@@ -490,6 +587,17 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                 )
                 t5_child = mutate_tensor(
                     splice_crossover(t5_candidates[p1_idx], t5_candidates[p2_idx], mask=current_t5_mask),
+                    self.mutation_rate,
+                    self.mutation_strength,
+                )
+            elif self.crossover_method == "N-Point Splice":
+                clip_child = mutate_tensor(
+                    self._n_point_splice_crossover(clip_candidates[p1_idx], clip_candidates[p2_idx], self.num_crossover_points, py_rng, mask=current_clip_mask),
+                    self.mutation_rate,
+                    self.mutation_strength,
+                )
+                t5_child = mutate_tensor(
+                    self._n_point_splice_crossover(t5_candidates[p1_idx], t5_candidates[p2_idx], self.num_crossover_points, py_rng, mask=current_t5_mask),
                     self.mutation_rate,
                     self.mutation_strength,
                 )
@@ -554,7 +662,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                 f"population size {len(new_population)}. Returning a random member."
             )
             selected_idx = py_rng.randint(0, len(new_population) - 1)
-        
+            
         selected_conditioning_output = new_population[selected_idx]
         selected_mask_pair_json = generated_mask_pairs[selected_idx]
 
