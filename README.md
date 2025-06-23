@@ -12,7 +12,7 @@
 ## Introduction
 This node takes a collection of prompt Conditioning objects for FLUX and applies a selected genetic algorithm operation to their embedding tensors, with an optional mutation that perturbs elements of the prompt embeddings at random.
 
-The Differential Evolution Scale and Num Crossover Points inputs are only used when applying the differential evolution or n-point splice crossover methods, respectively.
+Certain input fields are used only with certain selected crossover modes. Please see the tooltips/inputs documentation for more details.
 
 ### Installation:
 
@@ -91,3 +91,6 @@ generating a new population through crossover and mutation.
 </details>
 
 ---
+
+## Footnotes
+For questions/comments/concerns/etc, use github or drop into the InvokeAI discord where you'll probably find someone who can help.
