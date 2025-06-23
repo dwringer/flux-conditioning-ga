@@ -91,8 +91,8 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         description="Strength of mutation (Gaussian noise multiplier).",
         ui_order=6, # Re-ordered
     )
-    seed: Optional[int] = InputField(
-        default=None,
+    seed: int = InputField(
+        default=0,
         description="Random seed for deterministic behavior.",
         ui_order=7, # Re-ordered
     )
@@ -210,7 +210,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         # Initialize random number generators
         py_rng = random.Random(self.seed)
         torch_rng = (
-            torch.Generator().manual_seed(self.seed) if self.seed is not None else torch.default_generator
+            torch.Generator().manual_seed(self.seed)
         )
 
         # Load CLIP and T5 embeddings from candidates
