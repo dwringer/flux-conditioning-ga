@@ -364,87 +364,124 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             clip_child = None
             t5_child = None
 
-            # Select parents
-            if self.crossover_method == "Differential Evolution":
-                # Differential Evolution needs 3 distinct parents for t1, t2, t3
-                if len(self.candidates) < 3:
-                    error("Not enough candidates for Differential Evolution crossover (need at least 3). Skipping DE for this member.")
-                    continue # Skip this population member if parents cannot be selected
-                p_indices = py_rng.sample(range(len(self.candidates)), 3)
-                p1_idx, p2_idx, p3_idx = p_indices
-            else: # For N-Point Splice, BLX-alpha, we need 2 parents
-                if len(self.candidates) < 2:
-                    error(f"Not enough candidates for {self.crossover_method} crossover (need at least 2). Skipping for this member.")
-                    continue # Skip this population member if parents cannot be selected
-                p_indices = py_rng.sample(range(len(self.candidates)), 2)
-                p1_idx, p2_idx = p_indices
-                p3_idx = None # Not used for these methods
+            num_available_embeds = len(clip_candidates) # Assuming clip_candidates and t5_candidates have same length
 
-            try:
-                if self.crossover_method == "N-Point Splice":
-                    clip_child = self.mutate_tensor(
-                        self.n_point_splice_crossover(clip_candidates[p1_idx], clip_candidates[p2_idx], self.num_crossover_points, py_rng),
-                        self.mutation_rate,
-                        self.mutation_strength,
-                        self.use_gaussian_mutation,
-                        torch_rng,
-                    )
-                    t5_child = self.mutate_tensor(
-                        self.n_point_splice_crossover(t5_candidates[p1_idx], t5_candidates[p2_idx], self.num_crossover_points, py_rng),
-                        self.mutation_rate,
-                        self.mutation_strength,
-                        self.use_gaussian_mutation,
-                        torch_rng,
-                    )
-                elif self.crossover_method == "BLX-alpha": # New BLX-alpha crossover
-                    clip_child = self.mutate_tensor(
-                        self.blx_alpha_crossover(clip_candidates[p1_idx], clip_candidates[p2_idx], self.blx_alpha, self.crossover_rate, torch_rng),
-                        self.mutation_rate,
-                        self.mutation_strength,
-                        self.use_gaussian_mutation,
-                        torch_rng,
-                    )
-                    t5_child = self.mutate_tensor(
-                        self.blx_alpha_crossover(t5_candidates[p1_idx], t5_candidates[p2_idx], self.blx_alpha, self.crossover_rate, torch_rng),
-                        self.mutation_rate,
-                        self.mutation_strength,
-                        self.use_gaussian_mutation,
-                        torch_rng,
-                    )
-                elif self.crossover_method == "Differential Evolution":
-                    # p1_idx, p2_idx, p3_idx are already set for DE
-                    clip_child = self.mutate_tensor(
-                        self.differential_evolution_crossover(
-                            clip_candidates[p1_idx], clip_candidates[p2_idx], clip_candidates[p3_idx],
-                            self.differential_evolution_scale, self.crossover_rate, torch_rng # Pass rate and torch_rng
-                        ),
-                        self.mutation_rate,
-                        self.mutation_strength,
-                        self.use_gaussian_mutation,
-                        torch_rng,
-                    )
-                    t5_child = self.mutate_tensor(
-                        self.differential_evolution_crossover(
-                            t5_candidates[p1_idx], t5_candidates[p2_idx], t5_candidates[p3_idx],
-                            self.differential_evolution_scale, self.crossover_rate, torch_rng # Pass rate and torch_rng
-                        ),
-                        self.mutation_rate,
-                        self.mutation_strength,
-                        self.use_gaussian_mutation,
-                        torch_rng,
-                    )
-                else: # Fallback in case of unexpected crossover method
-                    warning(f"Unknown crossover method: {self.crossover_method}. Cloning parent.")
-                    clip_child = self.mutate_tensor(clip_candidates[p1_idx].clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
-                    t5_child = self.mutate_tensor(t5_candidates[p1_idx].clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
+            # Handle insufficient candidates for crossover
+            if num_available_embeds == 1:
+                # Case 1: Only one candidate, apply mutation directly
+                info("Only one candidate available. Applying mutation directly to generate new member.")
+                clip_child = self.mutate_tensor(
+                    clip_candidates[0].clone(), # Clone to ensure the original candidate's tensor is not modified
+                    self.mutation_rate,
+                    self.mutation_strength,
+                    self.use_gaussian_mutation,
+                    torch_rng,
+                )
+                t5_child = self.mutate_tensor(
+                    t5_candidates[0].clone(), # Clone to ensure the original candidate's tensor is not modified
+                    self.mutation_rate,
+                    self.mutation_strength,
+                    self.use_gaussian_mutation,
+                    torch_rng,
+                )
+            else:
+                # Prepare candidate lists for parent selection and crossover
+                # Use these `current_*_candidates` for sampling parents, as they might be augmented.
+                current_clip_candidates = list(clip_candidates) # Create a mutable copy
+                current_t5_candidates = list(t5_candidates) # Create a mutable copy
 
-            except Exception as e:
-                error(f"Error during crossover or mutation for member {i+1}: {e}. Skipping this member.")
-                continue
+                # Determine required number of parents for the chosen crossover method
+                required_parents = 3 if self.crossover_method == "Differential Evolution" else 2
+
+                # If there are insufficient candidates for the chosen crossover method, handle specific cases
+                if num_available_embeds < required_parents:
+                    if self.crossover_method == "Differential Evolution" and num_available_embeds == 2:
+                        # Case 2: Two candidates for Differential Evolution (which needs 3 parents)
+                        # Deterministically clone the first candidate to fulfill the requirement
+                        info("Two candidates available for Differential Evolution. Cloning the first candidate to meet the 3-parent requirement.")
+                        current_clip_candidates.append(clip_candidates[0].clone())
+                        current_t5_candidates.append(t5_candidates[0].clone())
+                    else:
+                        # For other cases where candidates are still insufficient (e.g., DE with only 1 candidate,
+                        # or 2-parent methods with less than 2 candidates, which are now covered by num_available_embeds == 1)
+                        error(f"Insufficient candidates ({num_available_embeds}) for {self.crossover_method} (requires {required_parents}). Skipping this member generation.")
+                        continue # Skip this population member if parents cannot be selected
+
+                try:
+                    # Select parents from the (potentially augmented) current_clip_candidates/current_t5_candidates
+                    if self.crossover_method == "Differential Evolution":
+                        # Differential Evolution needs 3 distinct parents for t1, t2, t3
+                        p_indices = py_rng.sample(range(len(current_clip_candidates)), 3)
+                        p1_idx, p2_idx, p3_idx = p_indices
+                    else: # For N-Point Splice, BLX-alpha, we need 2 parents
+                        p_indices = py_rng.sample(range(len(current_clip_candidates)), 2)
+                        p1_idx, p2_idx = p_indices
+                        p3_idx = None # Not used for these methods
+
+                    if self.crossover_method == "N-Point Splice":
+                        clip_child = self.mutate_tensor(
+                            self.n_point_splice_crossover(current_clip_candidates[p1_idx], current_clip_candidates[p2_idx], self.num_crossover_points, py_rng),
+                            self.mutation_rate,
+                            self.mutation_strength,
+                            self.use_gaussian_mutation,
+                            torch_rng,
+                        )
+                        t5_child = self.mutate_tensor(
+                            self.n_point_splice_crossover(current_t5_candidates[p1_idx], current_t5_candidates[p2_idx], self.num_crossover_points, py_rng),
+                            self.mutation_rate,
+                            self.mutation_strength,
+                            self.use_gaussian_mutation,
+                            torch_rng,
+                        )
+                    elif self.crossover_method == "BLX-alpha": # New BLX-alpha crossover
+                        clip_child = self.mutate_tensor(
+                            self.blx_alpha_crossover(current_clip_candidates[p1_idx], current_clip_candidates[p2_idx], self.blx_alpha, self.crossover_rate, torch_rng),
+                            self.mutation_rate,
+                            self.mutation_strength,
+                            self.use_gaussian_mutation,
+                            torch_rng,
+                        )
+                        t5_child = self.mutate_tensor(
+                            self.blx_alpha_crossover(current_t5_candidates[p1_idx], current_t5_candidates[p2_idx], self.blx_alpha, self.crossover_rate, torch_rng),
+                            self.mutation_rate,
+                            self.mutation_strength,
+                            self.use_gaussian_mutation,
+                            torch_rng,
+                        )
+                    elif self.crossover_method == "Differential Evolution":
+                        # p1_idx, p2_idx, p3_idx are already set for DE
+                        clip_child = self.mutate_tensor(
+                            self.differential_evolution_crossover(
+                                current_clip_candidates[p1_idx], current_clip_candidates[p2_idx], current_clip_candidates[p3_idx],
+                                self.differential_evolution_scale, self.crossover_rate, torch_rng # Pass rate and torch_rng
+                            ),
+                            self.mutation_rate,
+                            self.mutation_strength,
+                            self.use_gaussian_mutation,
+                            torch_rng,
+                        )
+                        t5_child = self.mutate_tensor(
+                            self.differential_evolution_crossover(
+                                current_t5_candidates[p1_idx], current_t5_candidates[p2_idx], current_t5_candidates[p3_idx],
+                                self.differential_evolution_scale, self.crossover_rate, torch_rng # Pass rate and torch_rng
+                            ),
+                            self.mutation_rate,
+                            self.mutation_strength,
+                            self.use_gaussian_mutation,
+                            torch_rng,
+                        )
+                    else: # Fallback in case of unexpected crossover method
+                        warning(f"Unknown crossover method: {self.crossover_method}. Cloning parent and mutating.")
+                        clip_child = self.mutate_tensor(current_clip_candidates[p1_idx].clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
+                        t5_child = self.mutate_tensor(current_t5_candidates[p1_idx].clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
+
+                except Exception as e:
+                    error(f"Error during crossover or mutation for member {i+1}: {e}. Skipping this member.")
+                    continue
 
 
             if clip_child is None or t5_child is None:
-                error("Crossover failed to produce child embeddings. Skipping this member.")
+                error("Child embeddings were not produced. Skipping this member.")
                 continue
 
             conditioning_info = FLUXConditioningInfo(clip_embeds=clip_child, t5_embeds=t5_child)
