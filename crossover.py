@@ -357,7 +357,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
         if not all(t.shape == first_t5_shape for t in t5_candidates):
             warning("Inconsistent T5 embedding shapes among candidates. Operations might fail.")
 
-        new_population: List[FluxConditioningOutput] = []
+        new_population: List[FluxConditioningInfo] = []
 
         # Generate the new population
         for i in range(self.population_size):
@@ -484,15 +484,8 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                 error("Child embeddings were not produced. Skipping this member.")
                 continue
 
-            conditioning_info = FLUXConditioningInfo(clip_embeds=clip_child, t5_embeds=t5_child)
-            conditioning_data = ConditioningFieldData(conditionings=[conditioning_info])
-            conditioning_name = context.conditioning.save(conditioning_data)
-            
-            new_population.append(
-                FluxConditioningOutput(
-                    conditioning=FluxConditioningField(conditioning_name=conditioning_name)
-                )
-            )
+            conditioning_info = FLUXConditioningInfo(clip_embeds=clip_child, t5_embeds=t5_child)            
+            new_population.append(conditioning_info)
             info(f"Generated new conditioning member {i+1}/{self.population_size}")
 
         if not new_population:
@@ -509,7 +502,12 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             )
             selected_idx = py_rng.randint(0, len(new_population) - 1)
             
-        selected_conditioning_output = new_population[selected_idx]
+        selected_conditioning_info = new_population[selected_idx]
+        selected_conditioning_data = ConditioningFieldData(conditionings=[selected_conditioning_info])
+        selected_conditioning_name = context.conditioning.save(selected_conditioning_data)
+        selected_conditioning_output = FluxConditioningOutput(
+            conditioning=FluxConditioningField(conditioning_name=selected_conditioning_name)
+        )
 
         return SelectedFluxConditioningOutput(
             conditioning=selected_conditioning_output.conditioning,
