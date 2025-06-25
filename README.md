@@ -23,6 +23,8 @@ repository's code (or just clone the repository yourself) into your
 ## Overview
 ### Nodes
 - [Flux Conditioning Genetic Algorithm](#flux-conditioning-genetic-algorithm) - Applies a genetic algorithm to a list of FLUX Conditionings,
+- [Flux Conditioning Genetic Algorithm](#flux-conditioning-genetic-algorithm) - Applies a genetic algorithm to a list of FLUX Conditionings,
+- [Flux Conditioning Genetic Algorithm](#flux-conditioning-genetic-algorithm) - Applies a genetic algorithm to a list of FLUX Conditionings,
 
 <details>
 <summary>
@@ -35,6 +37,64 @@ repository's code (or just clone the repository yourself) into your
 </details>
 
 ## Nodes
+### Flux Conditioning Genetic Algorithm
+**ID:** `flux_conditioning_genetic_algorithm`
+
+**Category:** conditioning
+
+**Tags:** conditioning, flux, genetic, algorithm, evolution
+
+**Version:** 1.2.0
+
+**Description:** Applies a genetic algorithm to a list of FLUX Conditionings,
+
+generating a new population through crossover and mutation.
+    Includes options for different crossover strategies and mutation noise types.
+    Handles T5 embedding size mismatches during crossover.
+
+<details>
+<summary>
+
+#### Inputs
+
+</summary>
+
+| Name | Type | Description | Default |
+| ---- | ---- | ----------- | ------- |
+| `candidates` | `list[FluxConditioningField]` | List of FLUX Conditioning candidates for the genetic algorithm. | None |
+| `population_size` | `int` | Desired size of the new conditioning population. | 10 |
+| `crossover_method` | `Literal[(Differential Evolution, BLX-alpha, N-Point Splice)]` | Method to use for combining parent embeddings. | Differential Evolution |
+| `num_crossover_points` | `int` | Number of crossover points for N-Point Splice. (Only used with N-Point Splice method) | 3 |
+| `differential_evolution_scale` | `float` | Scale factor for differential evolution crossover. (Only used with Differential Evolution method) | 0.7 |
+| `crossover_rate` | `float` | Crossover rate; probability of change for each tensor element. (Only used with DE and BLX-alpha methods) | 1.0 |
+| `blx_alpha` | `float` | Alpha parameter for BLX-alpha crossover. (Only used with BLX-alpha method) | 0.5 |
+| `expand_t5_embeddings` | `bool` | If true, smaller T5 embeddings are expanded by concatenating clones if their size along dimension 1 is an exact multiple of the larger embedding's size. Otherwise, the larger embedding is cut down. This only applies during crossover when sizes are mismatched. | True |
+| `mutation_rate` | `float` | Rate of mutation per tensor element (0.0 to 1.0). | 0.1 |
+| `mutation_strength` | `float` | Strength of mutation (noise multiplier). | 0.05 |
+| `use_gaussian_mutation` | `bool` | If true, uses Gaussian noise for mutation; otherwise, uses uniform noise. | True |
+| `seed` | `int` | Random seed for deterministic behavior. | 0 |
+| `selected_member_index` | `int` | Index of the new population member to output as a single conditioning. | 0 |
+
+
+</details>
+
+<details>
+<summary>
+
+#### Output
+
+</summary>
+
+**Type:** `SelectedFluxConditioningOutput`
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| `conditioning` | `FluxConditioningField` | The selected Flux Conditioning |
+
+
+</details>
+
+---
 ### Flux Conditioning Genetic Algorithm
 **ID:** `flux_conditioning_genetic_algorithm`
 
@@ -65,6 +125,64 @@ generating a new population through crossover and mutation.
 | `differential_evolution_scale` | `float` | Scale factor for differential evolution crossover. (Only used with Differential Evolution method) | 0.7 |
 | `crossover_rate` | `float` | Crossover rate; probability of change for each tensor element. (Only used with DE and BLX-alpha methods) | 1.0 |
 | `blx_alpha` | `float` | Alpha parameter for BLX-alpha crossover. (Only used with BLX-alpha method) | 0.5 |
+| `mutation_rate` | `float` | Rate of mutation per tensor element (0.0 to 1.0). | 0.1 |
+| `mutation_strength` | `float` | Strength of mutation (noise multiplier). | 0.05 |
+| `use_gaussian_mutation` | `bool` | If true, uses Gaussian noise for mutation; otherwise, uses uniform noise. | True |
+| `seed` | `int` | Random seed for deterministic behavior. | 0 |
+| `selected_member_index` | `int` | Index of the new population member to output as a single conditioning. | 0 |
+
+
+</details>
+
+<details>
+<summary>
+
+#### Output
+
+</summary>
+
+**Type:** `SelectedFluxConditioningOutput`
+
+| Name | Type | Description |
+| ---- | ---- | ----------- |
+| `conditioning` | `FluxConditioningField` | The selected Flux Conditioning |
+
+
+</details>
+
+---
+### Flux Conditioning Genetic Algorithm
+**ID:** `flux_conditioning_genetic_algorithm`
+
+**Category:** conditioning
+
+**Tags:** conditioning, flux, genetic, algorithm, evolution
+
+**Version:** 1.2.1
+
+**Description:** Applies a genetic algorithm to a list of FLUX Conditionings,
+
+generating a new population through crossover and mutation.
+    Includes options for different crossover strategies and mutation noise types.
+    Handles T5 embedding size mismatches during crossover.
+
+<details>
+<summary>
+
+#### Inputs
+
+</summary>
+
+| Name | Type | Description | Default |
+| ---- | ---- | ----------- | ------- |
+| `candidates` | `list[FluxConditioningField]` | List of FLUX Conditioning candidates for the genetic algorithm. | None |
+| `population_size` | `int` | Desired size of the new conditioning population. | 10 |
+| `crossover_method` | `Literal[(Differential Evolution, BLX-alpha, N-Point Splice)]` | Method to use for combining parent embeddings. | Differential Evolution |
+| `num_crossover_points` | `int` | Number of crossover points for N-Point Splice. (Only used with N-Point Splice method) | 3 |
+| `differential_evolution_scale` | `float` | Scale factor for differential evolution crossover. (Only used with Differential Evolution method) | 0.7 |
+| `crossover_rate` | `float` | Crossover rate; probability of change for each tensor element. (Only used with DE and BLX-alpha methods) | 1.0 |
+| `blx_alpha` | `float` | Alpha parameter for BLX-alpha crossover. (Only used with BLX-alpha method) | 0.5 |
+| `expand_t5_embeddings` | `bool` | If true, smaller T5 embeddings are expanded by concatenating clones if their size along dimension 1 is an exact multiple of the larger embedding's size. Otherwise, the larger embedding is cut down. This only applies during crossover when sizes are mismatched. | True |
 | `mutation_rate` | `float` | Rate of mutation per tensor element (0.0 to 1.0). | 0.1 |
 | `mutation_strength` | `float` | Strength of mutation (noise multiplier). | 0.05 |
 | `use_gaussian_mutation` | `bool` | If true, uses Gaussian noise for mutation; otherwise, uses uniform noise. | True |
