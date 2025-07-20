@@ -38,7 +38,7 @@ class SelectedFluxConditioningOutput(BaseInvocationOutput):
     title="Flux Conditioning Genetic Algorithm",
     tags=["conditioning", "flux", "genetic", "algorithm", "evolution"],
     category="conditioning",
-    version="1.2.1",  # Increment version for T5 embedding size handling optimization
+    version="1.3.0",  # Increment version for feature changes
 )
 class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
     """
@@ -68,30 +68,35 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             "N-Point Splice": "N-Point Splice (Multiple random points)"
         }
     )
+    de_base_candidate: Optional[FluxConditioningField] = InputField(
+        default=None,
+        description="Optional FLUX Conditioning to use as the base (A) for Differential Evolution crossover.",
+        ui_order=3,
+    )
     num_crossover_points: int = InputField(
         default=3,
         ge=1,
         description="Number of crossover points for N-Point Splice. (Only used with N-Point Splice method)",
-        ui_order=3,
+        ui_order=4,
     )
     differential_evolution_scale: float = InputField(
         default=0.7,
         ge=0.0,
         description="Scale factor for differential evolution crossover. (Only used with Differential Evolution method)",
-        ui_order=4,
+        ui_order=5,
     )
     crossover_rate: float = InputField(
         default=1.0,
         ge=0.0,
         le=1.0, # Rate should be between 0 and 1 for probability
         description="Crossover rate; probability of change for each tensor element. (Only used with DE and BLX-alpha methods)",
-        ui_order=5,
+        ui_order=6,
     )
     blx_alpha: float = InputField(
         default=0.5,
         ge=0.0,
         description="Alpha parameter for BLX-alpha crossover. (Only used with BLX-alpha method)",
-        ui_order=6,
+        ui_order=7,
     )
     expand_t5_embeddings: bool = InputField( # New input field for T5 embedding size handling
         default=True,
@@ -100,36 +105,36 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             "is an exact multiple of the larger embedding's size. Otherwise, the larger embedding is cut down. "
             "This only applies during crossover when sizes are mismatched."
         ),
-        ui_order=7,
+        ui_order=8,
     )
     mutation_rate: float = InputField(
         default=0.1,
         ge=0.0,
         le=1.0,
         description="Rate of mutation per tensor element (0.0 to 1.0).",
-        ui_order=8,
+        ui_order=9,
     )
     mutation_strength: float = InputField(
         default=0.05,
         ge=0.0,
         description="Strength of mutation (noise multiplier).",
-        ui_order=9,
+        ui_order=10,
     )
     use_gaussian_mutation: bool = InputField(
         default=True,
         description="If true, uses Gaussian noise for mutation; otherwise, uses uniform noise.",
-        ui_order=10,
+        ui_order=11,
     )
     seed: int = InputField(
         default=0,
         description="Random seed for deterministic behavior.",
-        ui_order=11,
+        ui_order=12,
     )
     selected_member_index: int = InputField(
         default=0,
         ge=0,
         description="Index of the new population member to output as a single conditioning.",
-        ui_order=12,
+        ui_order=13,
     )
 
     def _load_conditioning(
@@ -422,6 +427,21 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
             return SelectedFluxConditioningOutput(
                 conditioning=FluxConditioningField(conditioning_name=""),
             )
+        
+        # Load the DE base candidate if provided
+        de_base_clip_embeds = None
+        de_base_t5_embeds = None
+        if self.de_base_candidate and self.crossover_method == "Differential Evolution":
+            info("Differential Evolution Base candidate provided. Attempting to load.")
+            de_base_clip_embeds = self._clip_embeds(context, self.de_base_candidate, like=initial_clip_like)
+            de_base_t5_embeds = self._t5_embeds(context, self.de_base_candidate, like=initial_t5_like)
+            if de_base_clip_embeds is None or de_base_t5_embeds is None:
+                warning("Failed to load Differential Evolution Base candidate. It will not be used.")
+                de_base_clip_embeds = None
+                de_base_t5_embeds = None
+            else:
+                info("Differential Evolution Base candidate loaded successfully.")
+
 
         new_population: List[FluxConditioningInfo] = []
 
@@ -459,64 +479,89 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                 required_parents = 3 if self.crossover_method == "Differential Evolution" else 2
 
                 # If there are insufficient candidates for the chosen crossover method, handle specific cases
-                if num_available_embeds < required_parents:
-                    if self.crossover_method == "Differential Evolution" and num_available_embeds == 2:
-                        # Case 2: Two candidates for Differential Evolution (needs 3 parents)
-                        # Deterministically clone the first candidate to fulfill the requirement
-                        info("Two candidates available for Differential Evolution. Cloning the first candidate to meet the 3-parent requirement.")
-                        current_clip_candidates.append(clip_candidates[0].clone())
-                        current_t5_candidates.append(t5_candidates[0].clone())
-                    else:
-                        error(f"Insufficient candidates ({num_available_embeds}) for {self.crossover_method} (requires {required_parents}). Skipping this member generation.")
-                        continue # Skip this population member if parents cannot be selected
+                if self.crossover_method == "Differential Evolution":
+                    # Special handling for Differential Evolution if de_base_candidate is used
+                    if de_base_clip_embeds is not None and de_base_t5_embeds is not None:
+                        # We have the 'A' parent from de_base_candidate. We need 2 more from general candidates.
+                        if num_available_embeds < 2:
+                             # Not enough candidates for B and C
+                            error(f"Insufficient candidates ({num_available_embeds}) in the list for Differential Evolution with a base candidate (requires 2 more). Skipping this member generation.")
+                            continue
+                        # Select 2 distinct parents from the existing candidates for B and C
+                        other_p_indices = py_rng.sample(range(len(current_clip_candidates)), 2)
+                        p2_idx, p3_idx = other_p_indices
 
-                try:
-                    # Select parents from the (potentially augmented) current_clip_candidates/current_t5_candidates
-                    if self.crossover_method == "Differential Evolution":
-                        # Differential Evolution needs 3 distinct parents for t1, t2, t3
+                        p1_clip = de_base_clip_embeds
+                        p1_t5 = de_base_t5_embeds
+                        p2_clip = current_clip_candidates[p2_idx]
+                        p2_t5 = current_t5_candidates[p2_idx]
+                        p3_clip = current_clip_candidates[p3_idx]
+                        p3_t5 = current_t5_candidates[p3_idx]
+
+                    elif num_available_embeds < required_parents:
+                        # Case 2: Two candidates for Differential Evolution (needs 3 parents), no de_base_candidate
+                        if num_available_embeds == 2:
+                            # Deterministically clone the first candidate to fulfill the requirement
+                            info("Two candidates available for Differential Evolution. Cloning the first candidate to meet the 3-parent requirement.")
+                            p1_clip, p2_clip, p3_clip = current_clip_candidates[0], current_clip_candidates[1], current_clip_candidates[0].clone()
+                            p1_t5, p2_t5, p3_t5 = current_t5_candidates[0], current_t5_candidates[1], current_t5_candidates[0].clone()
+                        else:
+                            error(f"Insufficient candidates ({num_available_embeds}) for Differential Evolution (requires 3). Skipping this member generation.")
+                            continue # Skip this population member if parents cannot be selected
+                    else: # Sufficient candidates, no de_base_candidate
                         p_indices = py_rng.sample(range(len(current_clip_candidates)), 3)
                         p1_idx, p2_idx, p3_idx = p_indices
+                        p1_clip = current_clip_candidates[p1_idx]
+                        p1_t5 = current_t5_candidates[p1_idx]
+                        p2_clip = current_clip_candidates[p2_idx]
+                        p2_t5 = current_t5_candidates[p2_idx]
+                        p3_clip = current_clip_candidates[p3_idx]
+                        p3_t5 = current_t5_candidates[p3_idx]
+                else: # For N-Point Splice, BLX-alpha, we need 2 parents
+                    if num_available_embeds < required_parents:
+                        error(f"Insufficient candidates ({num_available_embeds}) for {self.crossover_method} (requires {required_parents}). Skipping this member generation.")
+                        continue
+                    p_indices = py_rng.sample(range(len(current_clip_candidates)), 2)
+                    p1_idx, p2_idx = p_indices
+                    p1_clip = current_clip_candidates[p1_idx]
+                    p1_t5 = current_t5_candidates[p1_idx]
+                    p2_clip = current_clip_candidates[p2_idx]
+                    p2_t5 = current_t5_candidates[p2_idx]
+                    # No p3 needed for these methods, so p3_clip/t5 will remain None or be unused
 
-                        # Get the original T5 tensors
-                        t5_p1_original = current_t5_candidates[p1_idx]
-                        t5_p2_original = current_t5_candidates[p2_idx]
-                        t5_p3_original = current_t5_candidates[p3_idx]
-
+                try:
+                    if self.crossover_method == "Differential Evolution":
                         # Check for any T5 mismatch among the three parents
-                        t5_mismatch_detected = False
-                        if not (t5_p1_original.shape[1] == t5_p2_original.shape[1] == t5_p3_original.shape[1]):
-                            t5_mismatch_detected = True
+                        t5_mismatch_detected = not (p1_t5.shape[1] == p2_t5.shape[1] == p3_t5.shape[1])
                         
-                        t5_p1_final, t5_p2_final, t5_p3_aligned = t5_p1_original, t5_p2_original, t5_p3_original
+                        t5_p1_final, t5_p2_final, t5_p3_final = p1_t5, p2_t5, p3_t5
 
                         if t5_mismatch_detected:
                             info("T5 embedding size mismatch detected for Differential Evolution parents. Handling mismatch.")
                             # Step 1: Align t5_p1 and t5_p2
-                            if t5_p1_original.shape[1] != t5_p2_original.shape[1]:
-                                t5_p1_aligned, t5_p2_aligned = self._handle_t5_mismatch(t5_p1_original.clone(), t5_p2_original.clone(), self.expand_t5_embeddings)
+                            if p1_t5.shape[1] != p2_t5.shape[1]:
+                                t5_p1_aligned_12, t5_p2_aligned_12 = self._handle_t5_mismatch(p1_t5.clone(), p2_t5.clone(), self.expand_t5_embeddings)
+                            else:
+                                t5_p1_aligned_12, t5_p2_aligned_12 = p1_t5.clone(), p2_t5.clone()
 
-                            # Step 2: Align the (now potentially aligned) t5_p1 with t5_p3
-                            if t5_p1_aligned.shape[1] != t5_p3_original.shape[1]:
-                                t5_p1_final, t5_p3_aligned = self._handle_t5_mismatch(t5_p1_aligned.clone(), t5_p3_original.clone(), self.expand_t5_embeddings)
+                            # Step 2: Align the (now potentially aligned) t5_p1_aligned_12 with t5_p3
+                            if t5_p1_aligned_12.shape[1] != p3_t5.shape[1]:
+                                t5_p1_final, t5_p3_final = self._handle_t5_mismatch(t5_p1_aligned_12.clone(), p3_t5.clone(), self.expand_t5_embeddings)
+                            else:
+                                t5_p1_final, t5_p3_final = t5_p1_aligned_12.clone(), p3_t5.clone()
 
-                            # Step 3: Make sure that t5_p1 is finalized
-                            if t5_p1_final.shape[1] != t5_p1_aligned.shape[1]:
-                                t5_p1_final = t5_p1_aligned
+                            # Step 3: Ensure t5_p2_aligned_12 matches the final size of t5_p1_final.
+                            if t5_p1_final.shape[1] != t5_p2_aligned_12.shape[1]:
+                                t5_p2_final, _ = self._handle_t5_mismatch(t5_p2_aligned_12.clone(), t5_p1_final.clone(), self.expand_t5_embeddings)
+                            else:
+                                t5_p2_final = t5_p2_aligned_12.clone()
 
-                            # Step 4: Ensure t5_p2_aligned matches the final size of t5_p1_final.
-                            # This covers cases where t5_p1_aligned might have been further trimmed by t5_p3_original.
-                            if t5_p1_final.shape[1] != t5_p2_aligned.shape[1]:
-                                t5_p2_final, _ = self._handle_t5_mismatch(t5_p2_aligned.clone(), t5_p1_final.clone(), self.expand_t5_embeddings)
-
-                            # Step 5: Make sure t5_p2 is finalized
-                            if t5_p2_final.shape[1] != t5_p2_aligned.shape[1]:
-                                t5_p2_final = t5_p2_aligned
                         else:
                             info("T5 embedding sizes are consistent for Differential Evolution parents. No mismatch handling required.")
                         
                         clip_child = self.mutate_tensor(
                             self.differential_evolution_crossover(
-                                current_clip_candidates[p1_idx], current_clip_candidates[p2_idx], current_clip_candidates[p3_idx],
+                                p1_clip, p2_clip, p3_clip,
                                 self.differential_evolution_scale, self.crossover_rate, torch_rng
                             ),
                             self.mutation_rate,
@@ -526,7 +571,7 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                         )
                         t5_child = self.mutate_tensor(
                             self.differential_evolution_crossover(
-                                t5_p1_final, t5_p2_final, t5_p3_aligned, # Use the aligned T5 tensors
+                                t5_p1_final, t5_p2_final, t5_p3_final, # Use the aligned T5 tensors
                                 self.differential_evolution_scale, self.crossover_rate, torch_rng
                             ),
                             self.mutation_rate,
@@ -535,18 +580,12 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                             torch_rng,
                         )
                     else: # For N-Point Splice, BLX-alpha, we need 2 parents
-                        p_indices = py_rng.sample(range(len(current_clip_candidates)), 2)
-                        p1_idx, p2_idx = p_indices
-
-                        t5_p1 = current_t5_candidates[p1_idx]
-                        t5_p2 = current_t5_candidates[p2_idx]
-
                         # Only call _handle_t5_mismatch if there's an actual mismatch
-                        if t5_p1.shape[1] != t5_p2.shape[1]:
+                        if p1_t5.shape[1] != p2_t5.shape[1]:
                             info("T5 embedding size mismatch detected for 2-parent crossover. Handling mismatch.")
-                            t5_p1, t5_p2 = self._handle_t5_mismatch(
-                                t5_p1.clone(), # Clone before passing to helper
-                                t5_p2.clone(), # Clone before passing to helper
+                            p1_t5, p2_t5 = self._handle_t5_mismatch(
+                                p1_t5.clone(), # Clone before passing to helper
+                                p2_t5.clone(), # Clone before passing to helper
                                 self.expand_t5_embeddings
                             )
                         else:
@@ -554,14 +593,14 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
 
                         if self.crossover_method == "N-Point Splice":
                             clip_child = self.mutate_tensor(
-                                self.n_point_splice_crossover(current_clip_candidates[p1_idx], current_clip_candidates[p2_idx], self.num_crossover_points, py_rng),
+                                self.n_point_splice_crossover(p1_clip, p2_clip, self.num_crossover_points, py_rng),
                                 self.mutation_rate,
                                 self.mutation_strength,
                                 self.use_gaussian_mutation,
                                 torch_rng,
                             )
                             t5_child = self.mutate_tensor(
-                                self.n_point_splice_crossover(t5_p1, t5_p2, self.num_crossover_points, py_rng),
+                                self.n_point_splice_crossover(p1_t5, p2_t5, self.num_crossover_points, py_rng),
                                 self.mutation_rate,
                                 self.mutation_strength,
                                 self.use_gaussian_mutation,
@@ -569,14 +608,14 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                             )
                         elif self.crossover_method == "BLX-alpha":
                             clip_child = self.mutate_tensor(
-                                self.blx_alpha_crossover(current_clip_candidates[p1_idx], current_clip_candidates[p2_idx], self.blx_alpha, self.crossover_rate, torch_rng),
+                                self.blx_alpha_crossover(p1_clip, p2_clip, self.blx_alpha, self.crossover_rate, torch_rng),
                                 self.mutation_rate,
                                 self.mutation_strength,
                                 self.use_gaussian_mutation,
                                 torch_rng,
                             )
                             t5_child = self.mutate_tensor(
-                                self.blx_alpha_crossover(t5_p1, t5_p2, self.blx_alpha, self.crossover_rate, torch_rng),
+                                self.blx_alpha_crossover(p1_t5, p2_t5, self.blx_alpha, self.crossover_rate, torch_rng),
                                 self.mutation_rate,
                                 self.mutation_strength,
                                 self.use_gaussian_mutation,
@@ -584,8 +623,8 @@ class FluxConditioningGeneticAlgorithmInvocation(BaseInvocation):
                             )
                         else: # Fallback in case of unexpected crossover method (should be caught earlier)
                             warning(f"Unknown crossover method: {self.crossover_method}. Cloning parent and mutating.")
-                            clip_child = self.mutate_tensor(current_clip_candidates[p1_idx].clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
-                            t5_child = self.mutate_tensor(current_t5_candidates[p1_idx].clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
+                            clip_child = self.mutate_tensor(p1_clip.clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
+                            t5_child = self.mutate_tensor(p1_t5.clone(), self.mutation_rate, self.mutation_strength, self.use_gaussian_mutation, torch_rng)
 
                 except Exception as e:
                     error(f"Error during crossover or mutation for member {i+1}: {e}. Skipping this member.")
